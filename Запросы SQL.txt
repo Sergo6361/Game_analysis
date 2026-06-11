@@ -1,0 +1,71 @@
+# 1.Выгрузка DAU, WAU, MAU
+
+select count(distinct id_user) as cnt_user
+       ,date_trunc('day',start_session) as DAU
+       ,date_trunc('week',start_session) as WAU
+       ,date_trunc('month',start_session) as MAU
+from skygame.game_sessions
+group by DAU, WAU, MAU
+order by cnt_user
+
+# 2. Выгрузка 25 самых вовлеченных играков
+
+select us.id_user
+    ,sum(extract(epoch from (end_session - start_session))) / (60) as session_minutes
+from skygame.users as us
+    join skygame.game_sessions as sgs
+    on us.id_user = sgs.id_user
+where end_session is not null
+    and us.reg_date between '2022-01-01' and '2022-12-31'
+group by us.id_user
+order by session_minutes desc
+limit 25
+
+# 3. Ищём и оцениваем ошибки в данных
+
+select su.dev_type
+        ,count(*) as cnt_session
+        ,sum(case when end_session is null then 1 else 0 end) as cnt_problem_session
+        ,sum(case when dev_type = 'ios' and end_session is null then 1.0 else 0.0 end)/count(*) as fraction_ios_problem
+        ,sum(case when dev_type = 'android' and end_session is null then 1.0 else 0.0 end)/count(*) as fraction_android_problem
+        ,sum(case when dev_type = 'ios' and end_session is null then 1.0 else 0.0 end)/count(*)*100 as percent_ios_problem
+        ,sum(case when dev_type = 'android' and end_session is null then 1.0 else 0.0 end)/count(*)*100 as percent_android_problem
+        ,sum(case when end_session is null then 1.0 else 0.0 end)/count(*) as share_null_session
+from skygame.users as su
+      join skygame.game_sessions sgs
+      on su.id_user = sgs.id_user
+group by su.dev_type
+
+# 4. Проверяем гипотезу "лояльных игроков"
+
+with user_cohort as 
+        (select u.id_user
+        , case when extract (year from u.reg_date) = 2022
+             and extract (month from u.reg_date) in (11, 12)
+                then '1' else '0' end as cohort
+        FROM skygame.users u
+        ),
+session_durations as 
+        (select uc.cohort
+            , extract (epoch from (gs.end_session - gs.start_session)) as duration_sec
+        from user_cohort uc 
+        left join skygame.game_sessions as gs 
+            on uc.id_user = gs.id_user
+                where gs.end_session is not null
+                    and gs.start_session is not null
+                        and extract(epoch from (gs.end_session - gs.start_session)) > 300  
+        )
+select cohort
+    , avg (duration_sec) / 60 as avg_session_duration_min 
+from session_durations
+group by cohort
+
+# 5. Рассчитываем K-factor нашей игры
+
+select count(distinct u.id_user) cnt_user 
+      ,sum(coalesce(ref_reg,0)) / count(distinct u.id_user) k_factor 
+      ,(select count(distinct u.id_user) / count(distinct date_trunc('month' , reg_date))) avg_val_coh
+      ,(select count(distinct u.id_user) / count(distinct date_trunc('month' , reg_date))) * sum(ref_reg) / count(distinct u.id_user) exp_val
+from skygame.users u
+    left join skygame.referral r
+        on u.id_user = r.id_user
